@@ -95,6 +95,8 @@ func main() {
 	log.Debug().Str("pcapCommand", *pcapCommand).Send()
 	log.Debug().Str("listenAddress", *listenAddress).Send()
 
+	ctx, cancelFunc := signal.NotifyContext(context.Background(), os.Interrupt)
+
 	// Create connections to PcapClient map
 	connMap := map[net.Conn]PcapClient{}
 
@@ -109,11 +111,14 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to parse PCAP_COMMAND")
 	}
-	cmd := exec.Command(args[0], args[1:]...)
 	log.Debug().Strs("args", args).Send()
 
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Stdout = wStdout
-	cmd.Stderr = log.Logger
+	cmd.Stderr = log.Logger.Hook(zerolog.HookFunc(func(e *zerolog.Event, level zerolog.Level, message string) {
+		// set log level to debug for stderr
+		e.Str(zerolog.LevelFieldName, zerolog.LevelDebugValue)
+	}))
 
 	err = cmd.Start()
 	if err != nil {
@@ -121,8 +126,6 @@ func main() {
 	}
 
 	log.Debug().Int("pid", cmd.Process.Pid).Msg("started process")
-
-	ctx, cancelFunc := signal.NotifyContext(context.Background(), os.Interrupt)
 
 	// Read from process stdout pipe
 	handle, err := pcap.OpenOfflineFile(rStdout)
@@ -191,20 +194,17 @@ func main() {
 
 	log.Info().Msg("PCAP-over-IP server exiting")
 
-	err = cmd.Process.Kill()
-	if err != nil {
-		log.Err(err).Msg("failed to kill process")
-	}
-
 	err = rStdout.Close()
 	if err != nil {
 		log.Err(err).Msg("failed to close read pipe")
 	}
+	log.Debug().Msg("closed read pipe")
 
 	err = wStdout.Close()
 	if err != nil {
 		log.Err(err).Msg("failed to close write pipe")
 	}
+	log.Debug().Msg("closed write pipe")
 }
 
 func processPackets(
