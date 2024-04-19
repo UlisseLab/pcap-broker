@@ -9,9 +9,9 @@ More information on PCAP-over-IP can be found here:
 
 `pcap-broker` supports the following features:
 
- * Distributing packet data to one or more PCAP-over-IP listeners
- * Execute a command to capture traffic, usually `tcpdump` (expects stdout to be pcap data)
- * `pcap-broker` will exit if the capture command exits
+* Distributing packet data to one or more PCAP-over-IP listeners
+* Read from stdin pcap data (for example from a `tcpdump` command)
+* `pcap-broker` will exit if the capture command exits
 
 ## Building
 
@@ -34,8 +34,6 @@ $ docker run -it pcap-broker --help
 ```shell
 $ ./pcap-broker --help
 Usage of ./pcap-broker:
-  -cmd string
-        command to execute for pcap data (eg: tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w -)
   -debug
         enable debug logging
   -json
@@ -48,16 +46,17 @@ Usage of ./pcap-broker:
 Arguments can be passed via commandline:
 
 ```shell
-$ ./pcap-broker -cmd "sudo tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w -"
+$ sudo tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w - | ./pcap-broker -listen :4242
 ```
 
 Or alternatively via environment variables:
 
-```shell
-LISTEN_ADDRESS=:4242 PCAP_COMMAND='sudo tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w -' ./pcap-broker
-```
+```bash
+#!/bin/bash
+export LISTEN_ADDRESS=:4242
 
-Using environment variables is useful when you are using `pcap-broker` in a Docker setup.
+sudo tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w - | ./pcap-broker
+```
 
 Now you can connect to it via TCP and stream PCAP data using `nc` and `tcpdump`:
 
@@ -74,26 +73,17 @@ $ tshark -i TCP@localhost:4242
 # Acquiring PCAP data over SSH
 
 One use case is to acquire PCAP from a remote machine over SSH and make this available via PCAP-over-IP.
-Such a use case, including an example SSH command to bootstrap this, has been documented in the `docker-compose.yml.example` file:
 
-```yaml
-version: "3.2"
-
-services:
-  pcap-broker-remote-host:
-    image: pcap-broker:latest
-    restart: always
-    volumes:
-      # mount local user's SSH key into container
-      - ~/.ssh/id_ed25519:/root/.ssh/id_ed25519:ro 
-    ports:
-      # make the PCAP-over-IP port also available on the host on port 4200
-      - 4200:4242
-    environment:
-      # Command to SSH into remote-host and execute tcpdump and filter out it's own SSH client traffic
-      PCAP_COMMAND: ssh root@remote-host -o StrictHostKeyChecking=no 'IFACE=$$(ip route show to default | grep -Po1 "dev \K\w+") && BPF=$$(echo $$SSH_CLIENT | awk "{printf \"not (host %s and port %s and %s)\", \$$1, \$$2, \$$3;}") && tcpdump -U --immediate-mode -ni $$IFACE $$BPF -s 65535 -w -'                                 
-      LISTEN_ADDRESS: "0.0.0.0:4242"
+```shell
+$ ssh user@remotehost "sudo tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w -" | ./pcap-broker -listen :4242
 ```
+
+> [!TIP]
+> To filter out SSH traffic, you can use `tcpdump`'s `not port 22` filter:
+> ```shell
+> $ ssh user@remotehost "sudo tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w - not port 22" | ./pcap-broker -listen :4242
+> ```
+
 
 ## Background
 

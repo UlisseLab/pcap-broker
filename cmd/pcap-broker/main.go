@@ -7,11 +7,8 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"time"
-
-	"github.com/google/shlex"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/pcap"
@@ -55,7 +52,6 @@ func lookupHostnameWithTimeout(addr net.Addr, timeout time.Duration) (string, st
 }
 
 var (
-	pcapCommand     = flag.String("cmd", "", "command to execute for pcap data (eg: tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w -)")
 	listenAddress   = flag.String("listen", "", "listen address for pcap-over-ip (eg: localhost:4242)")
 	noReverseLookup = flag.Bool("n", false, "disable reverse lookup of connecting PCAP-over-IP client IP address")
 	debug           = flag.Bool("debug", false, "enable debug logging")
@@ -72,17 +68,12 @@ func main() {
 		})
 	}
 
+	ctx, cancelFunc := signal.NotifyContext(context.Background(), os.Interrupt)
+
 	if *debug {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	} else {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	}
-
-	if *pcapCommand == "" {
-		*pcapCommand = os.Getenv("PCAP_COMMAND")
-		if *pcapCommand == "" {
-			log.Fatal().Msg("PCAP_COMMAND or -cmd not set, see --help for usage")
-		}
 	}
 
 	if *listenAddress == "" {
@@ -92,51 +83,15 @@ func main() {
 		}
 	}
 
-	log.Debug().Str("pcapCommand", *pcapCommand).Send()
 	log.Debug().Str("listenAddress", *listenAddress).Send()
 
-	ctx, cancelFunc := signal.NotifyContext(context.Background(), os.Interrupt)
-
-	// Create connections to PcapClient map
-	connMap := map[net.Conn]PcapClient{}
-
-	// Create a pipe for the command to write to, will be read by pcap.OpenOfflineFile
-	rStdout, wStdout, err := os.Pipe()
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to create pipe")
-	}
-
-	// Acquire pcap data
-	args, err := shlex.Split(*pcapCommand)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to parse PCAP_COMMAND")
-	}
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	log.Debug().Strs("args", args).Send()
-
-	cmd.Stdout = wStdout
-	cmd.Stderr = log.Logger.Hook(zerolog.HookFunc(func(e *zerolog.Event, level zerolog.Level, msg string) {
-		e.Str(zerolog.LevelFieldName, zerolog.LevelTraceValue)
-	}))
-
-	err = cmd.Start()
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to start command")
-	}
-
-	log.Debug().Int("pid", cmd.Process.Pid).Msg("started process")
-
-	// close context on process exit
-	go func() {
-		err := cmd.Wait()
-		if err != nil {
-			log.Fatal().Err(err).Msg("command exited with error")
-		}
-		cancelFunc()
-	}()
-
 	// Read from process stdout pipe
-	handle, err := pcap.OpenOfflineFile(rStdout)
+	var pcapStream *os.File
+
+	log.Info().Msg("reading pcap data from stdin. EOF to stop")
+	pcapStream = os.Stdin
+
+	handle, err := pcap.OpenOfflineFile(pcapStream)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to open pcap file")
 	}
@@ -144,6 +99,9 @@ func main() {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetSource.Lazy = true
 	packetSource.NoCopy = true
+
+	// Create connections to PcapClient map
+	connMap := map[net.Conn]PcapClient{}
 
 	go processPackets(ctx, packetSource, connMap)
 
@@ -158,6 +116,7 @@ func main() {
 	// close listener on context cancel
 	go func() {
 		<-ctx.Done()
+		log.Debug().Msg("closing listener")
 		cancelFunc()
 		err := l.Close()
 		if err != nil {
@@ -203,16 +162,6 @@ func main() {
 	}
 
 	log.Info().Msg("PCAP-over-IP server exiting")
-
-	err = rStdout.Close()
-	if err != nil {
-		log.Err(err).Msg("failed to close read pipe")
-	}
-
-	err = wStdout.Close()
-	if err != nil {
-		log.Err(err).Msg("failed to close write pipe")
-	}
 }
 
 func processPackets(
