@@ -4,58 +4,29 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/pcap"
-	"github.com/google/gopacket/pcapgo"
-
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+
+	"pcap-broker/pkg/pcapclient"
 )
 
-type PcapClient struct {
-	writer       *pcapgo.Writer
-	totalPackets uint64
-	totalBytes   uint64
-}
-
-func lookupHostnameWithTimeout(addr net.Addr, timeout time.Duration) (string, string, error) {
-	// Extract the IP address and port from the Addr object
-	tcpAddr, ok := addr.(*net.TCPAddr)
-	if !ok {
-		return "", "", fmt.Errorf("unsupported address type: %T", addr)
-	}
-	ip := tcpAddr.IP.String()
-	port := fmt.Sprintf("%d", tcpAddr.Port)
-
-	// Create a new context with the given timeout
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// Create a new Resolver and perform the IP lookup with the given context
-	resolver := net.Resolver{}
-	names, err := resolver.LookupAddr(ctx, ip)
-	if err != nil {
-		return "", "", err
-	}
-	if len(names) == 0 {
-		return "", "", fmt.Errorf("no hostnames found for %s", ip)
-	}
-
-	// Return the first IP address found and the original port
-	return names[0], port, nil
-}
+var (
+	listenAddr = flag.String("listen", "", "listen address for pcap-over-ip (eg: localhost:4242)")
+	debug      = flag.Bool("debug", false, "enable debug logging")
+	json       = flag.Bool("json", false, "enable json logging")
+)
 
 var (
-	listenAddress   = flag.String("listen", "", "listen address for pcap-over-ip (eg: localhost:4242)")
-	noReverseLookup = flag.Bool("n", false, "disable reverse lookup of connecting PCAP-over-IP client IP address")
-	debug           = flag.Bool("debug", false, "enable debug logging")
-	json            = flag.Bool("json", false, "enable json logging")
+	clients   []chan<- gopacket.Packet
+	clientsMx = &sync.RWMutex{}
 )
 
 func main() {
@@ -69,6 +40,10 @@ func main() {
 	}
 
 	ctx, cancelFunc := signal.NotifyContext(context.Background(), os.Interrupt)
+	go func() {
+		<-ctx.Done()
+		cancelFunc()
+	}()
 
 	if *debug {
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
@@ -76,14 +51,14 @@ func main() {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
 
-	if *listenAddress == "" {
-		*listenAddress = os.Getenv("LISTEN_ADDRESS")
-		if *listenAddress == "" {
-			*listenAddress = "localhost:4242"
+	if *listenAddr == "" {
+		*listenAddr = os.Getenv("LISTEN_ADDRESS")
+		if *listenAddr == "" {
+			*listenAddr = "localhost:4242"
 		}
 	}
 
-	log.Debug().Str("listenAddress", *listenAddress).Send()
+	log.Debug().Str("listenAddr", *listenAddr).Send()
 
 	// Read from process stdout pipe
 	var pcapStream *os.File
@@ -91,29 +66,34 @@ func main() {
 	log.Info().Msg("reading pcap data from stdin. EOF to stop")
 	pcapStream = os.Stdin
 
+	log.Debug().Msg("opening pcap file")
 	handle, err := pcap.OpenOfflineFile(pcapStream)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to open pcap file")
 	}
+	log.Debug().Msg("opened pcap file")
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetSource.Lazy = true
 	packetSource.NoCopy = true
 
-	// Create connections to PcapClient map
-	connMap := map[net.Conn]PcapClient{}
+	log.Debug().Msg("starting packet processing")
+	go processPackets(ctx, packetSource)
 
-	go processPackets(ctx, packetSource, connMap)
+	log.Debug().Msg("starting server")
+	listen(err, ctx, cancelFunc, handle)
 
-	log.Info().Msgf("PCAP-over-IP server listening on %v. press CTRL-C to exit", *listenAddress)
+	log.Warn().Msg("PCAP-over-IP server exiting")
+}
 
+func listen(err error, ctx context.Context, cancelFunc context.CancelFunc, handle *pcap.Handle) {
+	// Start server
 	config := net.ListenConfig{}
-	l, err := config.Listen(ctx, "tcp", *listenAddress)
+	l, err := config.Listen(ctx, "tcp", *listenAddr)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to listen")
 	}
 
-	// close listener on context cancel
 	go func() {
 		<-ctx.Done()
 		log.Debug().Msg("closing listener")
@@ -124,72 +104,83 @@ func main() {
 		}
 	}()
 
+	log.Info().Str("listenAddr", *listenAddr).Msg("started PCAP-over-IP server, CTRL+C to stop")
+
+	// accept connections
 	for {
 		conn, err := l.Accept()
-		if err != nil && ctx.Err() == nil {
-			log.Fatal().Err(err).Msg("failed to accept connection")
-		} else if errors.Is(ctx.Err(), context.Canceled) {
+		if err != nil && errors.Is(ctx.Err(), context.Canceled) {
 			break
-		}
-
-		if *noReverseLookup {
-			log.Printf("PCAP-over-IP connection from %v", conn.RemoteAddr())
-		} else {
-			ip, port, err := lookupHostnameWithTimeout(conn.RemoteAddr(), 100*time.Millisecond)
-			if err != nil {
-				log.Printf("PCAP-over-IP connection from %v", conn.RemoteAddr())
-			} else {
-				log.Printf("PCAP-over-IP connection from %s:%s", ip, port)
-			}
-		}
-
-		writer := pcapgo.NewWriter(conn)
-
-		// Write pcap header
-		err = writer.WriteFileHeader(65535, handle.LinkType())
-		if err != nil {
-			log.Err(err).Msg("failed to write pcap header")
-			err := conn.Close()
-			if err != nil {
-				log.Err(err).Msg("failed to close connection")
-			}
-
+		} else if err != nil {
+			log.Err(err).Msg("failed to accept connection")
 			continue
 		}
 
-		// add connection to map
-		connMap[conn] = PcapClient{writer: writer}
+		acceptClient(conn, handle)
 	}
-
-	log.Info().Msg("PCAP-over-IP server exiting")
 }
 
-func processPackets(
-	ctx context.Context,
-	packetSource *gopacket.PacketSource,
-	connMap map[net.Conn]PcapClient,
-) {
-	for packet := range packetSource.Packets() {
+func acceptClient(conn net.Conn, handle *pcap.Handle) {
+
+	logger := log.With().Any("remoteAddr", conn.RemoteAddr()).Logger()
+
+	logger.Info().
+		Int("connected", len(clients)+1).
+		Msg("accepted connection")
+	// Create a new pcap writer
+	client := pcapclient.NewPcapClient(conn)
+
+	// Write pcap header
+	err := client.WritePcapHeader(handle.LinkType())
+	if err != nil {
+		logger.Warn().Err(err).Msg("failed to write pcap header")
+		_ = conn.Close() // try to close connection
+		return
+	}
+
+	// send packets to client
+	logger.Debug().Msg("starting packet sender")
+	pktChan := make(chan gopacket.Packet, 100)
+
+	clientsMx.Lock()
+	clients = append(clients, pktChan)
+	clientsMx.Unlock()
+
+	errChan := client.SendPackets(pktChan)
+
+	// wait for error or close
+	go func() {
+		err := <-errChan
+		if err != nil {
+			logger.Err(err).Msg("removing client")
+		}
+
+		clientsMx.Lock()
+		for i, c := range clients {
+			if c == pktChan {
+				clients = append(clients[:i], clients[i+1:]...)
+				break
+			}
+		}
+		clientsMx.Unlock()
+
+		close(pktChan)
+	}()
+}
+
+func processPackets(ctx context.Context, source *gopacket.PacketSource) {
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-		}
+		case packet := <-source.Packets():
 
-		for conn, stats := range connMap {
-			ci := packet.Metadata().CaptureInfo
-			err := stats.writer.WritePacket(ci, packet.Data())
-			if err != nil {
-				log.Err(err).Msg("failed to write packet to connection")
-				delete(connMap, conn)
-				err := conn.Close()
-				if err != nil {
-					log.Err(err).Msg("failed to close connection")
-				}
-				continue
+			clientsMx.RLock()
+			for _, client := range clients {
+				client <- packet
+
 			}
-			stats.totalPackets += 1
-			stats.totalBytes += uint64(ci.CaptureLength)
+			clientsMx.RUnlock()
 		}
 	}
 }
