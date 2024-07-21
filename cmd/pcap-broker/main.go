@@ -22,10 +22,11 @@ var (
 	listenAddr = flag.String("listen", "", "listen address for pcap-over-ip (eg: localhost:4242)")
 	debug      = flag.Bool("debug", false, "enable debug logging")
 	json       = flag.Bool("json", false, "enable json logging")
+	logspeed   = flag.Bool("logspeed", false, "log packet speed")
 )
 
 var (
-	clients   []chan<- gopacket.Packet
+	clients   []*pcapclient.Client
 	clientsMx = &sync.RWMutex{}
 )
 
@@ -66,27 +67,26 @@ func main() {
 	log.Info().Msg("reading pcap data from stdin. EOF to stop")
 	pcapStream = os.Stdin
 
-	log.Debug().Msg("opening pcap file")
-	handle, err := pcap.OpenOfflineFile(pcapStream)
+	log.Debug().Str("stream", pcapStream.Name()).Msg("opening pcap file")
+	pcapHandle, err := pcap.OpenOfflineFile(pcapStream)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to open pcap file")
 	}
-	log.Debug().Msg("opened pcap file")
 
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	packetSource := gopacket.NewPacketSource(pcapHandle, pcapHandle.LinkType())
 	packetSource.Lazy = true
 	packetSource.NoCopy = true
 
 	log.Debug().Msg("starting packet processing")
 	go processPackets(ctx, packetSource)
 
-	log.Debug().Msg("starting server")
-	listen(err, ctx, cancelFunc, handle)
+	log.Debug().Str("addr", *listenAddr).Msg("starting server")
+	listen(ctx, pcapHandle)
 
 	log.Warn().Msg("PCAP-over-IP server exiting")
 }
 
-func listen(err error, ctx context.Context, cancelFunc context.CancelFunc, handle *pcap.Handle) {
+func listen(ctx context.Context, handle *pcap.Handle) {
 	// Start server
 	config := net.ListenConfig{}
 	l, err := config.Listen(ctx, "tcp", *listenAddr)
@@ -97,7 +97,6 @@ func listen(err error, ctx context.Context, cancelFunc context.CancelFunc, handl
 	go func() {
 		<-ctx.Done()
 		log.Debug().Msg("closing listener")
-		cancelFunc()
 		err := l.Close()
 		if err != nil {
 			log.Err(err).Msg("failed to close listener")
@@ -122,11 +121,9 @@ func listen(err error, ctx context.Context, cancelFunc context.CancelFunc, handl
 
 func acceptClient(conn net.Conn, handle *pcap.Handle) {
 
-	logger := log.With().Any("remoteAddr", conn.RemoteAddr()).Logger()
+	logger := log.With().Stringer("remoteAddr", conn.RemoteAddr()).Logger()
 
-	logger.Info().
-		Int("connected", len(clients)+1).
-		Msg("accepted connection")
+	logger.Info().Int("connected", len(clients)+1).Msg("accepted connection")
 	// Create a new pcap writer
 	client := pcapclient.NewPcapClient(conn)
 
@@ -139,48 +136,63 @@ func acceptClient(conn net.Conn, handle *pcap.Handle) {
 	}
 
 	// send packets to client
-	logger.Debug().Msg("starting packet sender")
-	pktChan := make(chan gopacket.Packet, 100)
-
 	clientsMx.Lock()
-	clients = append(clients, pktChan)
+	clients = append(clients, client)
 	clientsMx.Unlock()
+}
 
-	errChan := client.SendPackets(pktChan)
+func processPackets(ctx context.Context, source *gopacket.PacketSource) {
 
-	// wait for error or close
-	go func() {
-		err := <-errChan
-		if err != nil {
-			logger.Err(err).Msg("removing client")
+	relayedPackets := 0
+	startTime := time.Now()
+
+	for packet := range source.Packets() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 
+		relayedPackets++
+
+		clientsMx.RLock()
+		for _, client := range clients {
+
+			err := client.SendPacket(packet)
+			if err != nil {
+				log.Debug().Err(err).Msg("failed to send packet")
+				err = client.Close()
+				if err != nil {
+					log.Warn().Err(err).Msg("failed to close connection")
+				}
+			}
+
+		}
+		clientsMx.RUnlock()
+
+		// remove closed clients
+		// TODO: not the best way to do this, but it works for now
 		clientsMx.Lock()
-		for i, c := range clients {
-			if c == pktChan {
+		for i := 0; i < len(clients); i++ {
+			if clients[i].Closed() {
+				log.Info().Stringer("remote", clients[i].RemoteAddr()).
+					Int("connected", len(clients)-1).Msg("closed connection")
 				clients = append(clients[:i], clients[i+1:]...)
-				break
+				i--
 			}
 		}
 		clientsMx.Unlock()
 
-		close(pktChan)
-	}()
-}
-
-func processPackets(ctx context.Context, source *gopacket.PacketSource) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case packet := <-source.Packets():
-
-			clientsMx.RLock()
-			for _, client := range clients {
-				client <- packet
-
+		// log every 30 seconds
+		if time.Since(startTime) > 30*time.Second {
+			if *logspeed {
+				log.Info().Int("packets", relayedPackets).
+					Float64("pps", float64(relayedPackets)/time.Since(startTime).Seconds()).
+					Msg("packet speed")
+				startTime = time.Now()
 			}
-			clientsMx.RUnlock()
+
+			relayedPackets = 0 // to avoid overflow
 		}
 	}
 }
