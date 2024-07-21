@@ -15,7 +15,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"pcap-broker/pkg/pcapclient"
+	"github.com/UlisseLab/pcap-broker/pkg/pcapclient"
 )
 
 var (

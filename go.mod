@@ -1,4 +1,4 @@
-module pcap-broker
+module github.com/UlisseLab/pcap-broker
 
 go 1.20
 

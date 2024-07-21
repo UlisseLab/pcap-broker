@@ -13,6 +13,12 @@ More information on PCAP-over-IP can be found here:
 * Read from stdin pcap data (for example from a `tcpdump` command)
 * `pcap-broker` will exit if the capture command exits
 
+## Installation
+
+```shell
+go install github.com/UlisseLab/pcap-broker@latest
+```
+
 ## Building
 
 To build `pcap-broker`:
@@ -40,7 +46,6 @@ Usage of ./pcap-broker:
         enable json logging
   -listen string
         listen address for pcap-over-ip (eg: localhost:4242)
-  -n    disable reverse lookup of connecting PCAP-over-IP client IP address
 ```
 
 Arguments can be passed via commandline:
