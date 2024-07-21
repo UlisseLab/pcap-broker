@@ -16,7 +16,7 @@ More information on PCAP-over-IP can be found here:
 ## Installation
 
 ```shell
-go install github.com/UlisseLab/pcap-broker@latest
+go install github.com/UlisseLab/pcap-broker/cmd/pcap-broker@v0.1.3
 ```
 
 ## Building
