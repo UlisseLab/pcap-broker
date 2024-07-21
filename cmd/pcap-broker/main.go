@@ -122,11 +122,9 @@ func listen(err error, ctx context.Context, cancelFunc context.CancelFunc, handl
 
 func acceptClient(conn net.Conn, handle *pcap.Handle) {
 
-	logger := log.With().Any("remoteAddr", conn.RemoteAddr()).Logger()
+	logger := log.With().Stringer("remote", conn.RemoteAddr()).Logger()
 
-	logger.Info().
-		Int("connected", len(clients)+1).
-		Msg("accepted connection")
+	logger.Info().Int("connected", len(clients)+1).Msg("accepted connection")
 	// Create a new pcap writer
 	client := pcapclient.NewPcapClient(conn)
 
@@ -152,7 +150,8 @@ func acceptClient(conn net.Conn, handle *pcap.Handle) {
 	go func() {
 		err := <-errChan
 		if err != nil {
-			logger.Err(err).Msg("removing client")
+			logger.Debug().Err(err).Msg("client error")
+			logger.Info().Int("connected", len(clients)-1).Msg("closing connection")
 		}
 
 		clientsMx.Lock()
@@ -177,7 +176,12 @@ func processPackets(ctx context.Context, source *gopacket.PacketSource) {
 
 			clientsMx.RLock()
 			for _, client := range clients {
-				client <- packet
+
+				// do not wait if channel is full
+				select {
+				case client <- packet:
+				default:
+				}
 
 			}
 			clientsMx.RUnlock()
