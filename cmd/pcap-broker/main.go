@@ -168,23 +168,24 @@ func acceptClient(conn net.Conn, handle *pcap.Handle) {
 }
 
 func processPackets(ctx context.Context, source *gopacket.PacketSource) {
-	for {
+	for packet := range source.Packets() {
 		select {
 		case <-ctx.Done():
 			return
-		case packet := <-source.Packets():
-
-			clientsMx.RLock()
-			for _, client := range clients {
-
-				// do not wait if channel is full
-				select {
-				case client <- packet:
-				default:
-				}
-
-			}
-			clientsMx.RUnlock()
+		default:
 		}
+
+		clientsMx.RLock()
+		for _, client := range clients {
+
+			// do not wait if channel is full
+			select {
+			case client <- packet:
+			default:
+			}
+
+		}
+		clientsMx.RUnlock()
+
 	}
 }
