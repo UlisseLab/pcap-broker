@@ -3,6 +3,7 @@ package pcapclient
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -15,12 +16,19 @@ type Client struct {
 	closed bool
 }
 
-func NewPcapClient(conn net.Conn) *Client {
-	return &Client{
+func NewPcapClient(conn net.Conn) (*Client, error) {
+	c := &Client{
 		writer: pcapgo.NewWriter(conn),
 		conn:   conn,
 	}
+	// set a timeout for the connection
+	err := c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err != nil {
+		return nil, fmt.Errorf("set write deadline: %w", err)
+	}
+	return c, nil
 }
+
 func (c *Client) WritePcapHeader(linkType layers.LinkType) (err error) {
 	if c.closed {
 		return

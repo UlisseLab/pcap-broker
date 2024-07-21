@@ -125,10 +125,15 @@ func acceptClient(conn net.Conn, handle *pcap.Handle) {
 
 	logger.Info().Int("connected", len(clients)+1).Msg("accepted connection")
 	// Create a new pcap writer
-	client := pcapclient.NewPcapClient(conn)
+	client, err := pcapclient.NewPcapClient(conn)
+	if err != nil {
+		logger.Warn().Err(err).Msg("failed to create pcap client")
+		_ = conn.Close() // try to close connection
+		return
+	}
 
 	// Write pcap header
-	err := client.WritePcapHeader(handle.LinkType())
+	err = client.WritePcapHeader(handle.LinkType())
 	if err != nil {
 		logger.Warn().Err(err).Msg("failed to write pcap header")
 		_ = conn.Close() // try to close connection
