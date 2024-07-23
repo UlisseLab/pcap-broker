@@ -177,13 +177,7 @@ func processPackets(ctx context.Context, source *gopacket.PacketSource) {
 
 		clientsMx.RLock()
 		for _, client := range clients {
-
-			// do not wait if channel is full
-			select {
-			case client <- packet:
-			default:
-			}
-
+			client <- packet
 		}
 		clientsMx.RUnlock()
 

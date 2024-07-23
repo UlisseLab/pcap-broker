@@ -3,6 +3,7 @@ package pcapclient
 import (
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -54,6 +55,7 @@ func (c *Client) SendPackets(packets <-chan gopacket.Packet) <-chan error {
 
 func (c *Client) SendPacket(p gopacket.Packet) error {
 	info := p.Metadata().CaptureInfo
+	c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	err := c.writer.WritePacket(info, p.Data())
 	if err != nil {
 		return fmt.Errorf("write packet: %w", err)
