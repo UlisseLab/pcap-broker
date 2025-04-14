@@ -5,23 +5,29 @@
 PCAP-over-IP can be useful in situations where low latency is a priority, for example during Attack and Defend CTFs.
 More information on PCAP-over-IP can be found here:
 
- * https://www.netresec.com/?page=Blog&month=2022-08&post=What-is-PCAP-over-IP
+- https://www.netresec.com/?page=Blog&month=2022-08&post=What-is-PCAP-over-IP
 
 `pcap-broker` supports the following features:
 
-* Distributing packet data to one or more PCAP-over-IP listeners
-* Read from stdin pcap data (for example from a `tcpdump` command)
-* `pcap-broker` will exit if the capture command exits
+- Distributing packet data to one or more PCAP-over-IP listeners
+- Read from stdin pcap data (for example from a `tcpdump` command)
+- `pcap-broker` will exit if the capture command exits
 
 ## Installation
 
+Building `pcap-broker` requires the `libpcap` development headers, on Debian you can install it with:
+
 ```shell
-go install github.com/UlisseLab/pcap-broker/cmd/pcap-broker@v0.1.3
+$ apt install libpcap-dev
 ```
 
-## Building
+You can install `pcap-broker` directly using Go:
 
-To build `pcap-broker`:
+```shell
+go install github.com/UlisseLab/pcap-broker/cmd/pcap-broker@latest
+```
+
+Alternatively, clone the repository and build it from source:
 
 ```shell
 $ go build ./cmd/pcap-broker
@@ -85,15 +91,15 @@ $ ssh user@remotehost "sudo tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w -
 
 > [!TIP]
 > To filter out SSH traffic, you can use `tcpdump`'s `not port 22` filter:
+>
 > ```shell
 > $ ssh user@remotehost "sudo tcpdump -i eth0 -n --immediate-mode -s 65535 -U -w - not port 22" | ./pcap-broker -listen :4242
 > ```
-
 
 ## Background
 
 This tool was initially written for Attack & Defend CTF purposes but can be useful in other situations where low latency is preferred, or whenever a no-nonsense PCAP-over-IP server is needed. During the CTF that Fox-IT participated in, `pcap-broker` allowed the Blue Team to capture network data once and disseminate this to other tools that natively support PCAP-over-IP, such as:
 
-* [Arkime](https://arkime.com/)
-* [Tulip](https://github.com/OpenAttackDefenseTools/tulip) (after we did some custom patches)
-* WireShark's dumpcap and tshark
+- [Arkime](https://arkime.com/) ([docs](https://arkime.com/settings#reader-poi))
+- [Tulip](https://github.com/OpenAttackDefenseTools/tulip) ([#24](https://github.com/OpenAttackDefenseTools/tulip/pull/24))
+- WireShark's [dumpcap](https://www.wireshark.org/docs/man-pages/dumpcap.html) and [tshark](https://www.wireshark.org/docs/man-pages/tshark.html) (`-i TCP@<host>:<port>`)
