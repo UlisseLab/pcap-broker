@@ -39,10 +39,10 @@ func main() {
 		})
 	}
 
-	ctx, cancelFunc := signal.NotifyContext(context.Background(), os.Interrupt)
+	globalCtx, cancelGlobalCtx := signal.NotifyContext(context.Background(), os.Interrupt)
 	go func() {
-		<-ctx.Done()
-		cancelFunc()
+		<-globalCtx.Done()
+		cancelGlobalCtx()
 	}()
 
 	if *debug {
@@ -67,26 +67,43 @@ func main() {
 	pcapStream = os.Stdin
 
 	log.Debug().Msg("opening pcap file")
-	handle, err := pcap.OpenOfflineFile(pcapStream)
+	pcapHandle, err := pcap.OpenOfflineFile(pcapStream)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to open pcap file")
 	}
 	log.Debug().Msg("opened pcap file")
 
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	log.Debug().Msg("starting broker...")
+	packetSource := gopacket.NewPacketSource(pcapHandle, pcapHandle.LinkType())
 	packetSource.Lazy = true
 	packetSource.NoCopy = true
 
-	log.Debug().Msg("starting packet processing")
-	go processPackets(ctx, packetSource)
+	broker := pcapclient.NewPcapBroker(pcapHandle.LinkType())
+	broker.Input = packetSource.Packets()
+	go func() {
+		// stop the global context when the broker stops
+		broker.Start(globalCtx)
+		log.Debug().Msg("broker stopped")
+		cancelGlobalCtx()
+	}()
+	log.Debug().Msg("broker started")
 
-	log.Debug().Msg("starting server")
-	listen(err, ctx, cancelFunc, handle)
+	log.Debug().Msg("starting server...")
+	go func() {
+		// stop the global context when the server stops
+		listen(globalCtx, broker)
+		log.Debug().Msg("server stopped")
+		cancelGlobalCtx()
+	}()
 
-	log.Warn().Msg("PCAP-over-IP server exiting")
+	<-globalCtx.Done()
+	log.Debug().Msg("context done, shutting down...")
+
+	pcapHandle.Close()
+	log.Debug().Msg("pcap handle closed")
 }
 
-func listen(err error, ctx context.Context, cancelFunc context.CancelFunc, handle *pcap.Handle) {
+func listen(ctx context.Context, broker *pcapclient.PcapBroker) {
 	// Start server
 	config := net.ListenConfig{}
 	l, err := config.Listen(ctx, "tcp", *listenAddr)
@@ -97,14 +114,13 @@ func listen(err error, ctx context.Context, cancelFunc context.CancelFunc, handl
 	go func() {
 		<-ctx.Done()
 		log.Debug().Msg("closing listener")
-		cancelFunc()
 		err := l.Close()
 		if err != nil {
 			log.Err(err).Msg("failed to close listener")
 		}
 	}()
 
-	log.Info().Str("listenAddr", *listenAddr).Msg("started PCAP-over-IP server, CTRL+C to stop")
+	log.Info().Msgf("listening on %s, press Ctrl+C to stop", *listenAddr)
 
 	// accept connections
 	for {
@@ -116,70 +132,10 @@ func listen(err error, ctx context.Context, cancelFunc context.CancelFunc, handl
 			continue
 		}
 
-		acceptClient(conn, handle)
-	}
-}
+		client := pcapclient.NewPcapClient(conn)
+		log.Info().Str("clientID", client.ID).Msg("new client connected")
 
-func acceptClient(conn net.Conn, handle *pcap.Handle) {
-
-	logger := log.With().Stringer("remote", conn.RemoteAddr()).Logger()
-
-	logger.Info().Int("connected", len(clients)+1).Msg("accepted connection")
-	// Create a new pcap writer
-	client := pcapclient.NewPcapClient(conn)
-
-	// Write pcap header
-	err := client.WritePcapHeader(handle.LinkType())
-	if err != nil {
-		logger.Warn().Err(err).Msg("failed to write pcap header")
-		_ = conn.Close() // try to close connection
-		return
-	}
-
-	// send packets to client
-	logger.Debug().Msg("starting packet sender")
-	pktChan := make(chan gopacket.Packet, 100)
-
-	clientsMx.Lock()
-	clients = append(clients, pktChan)
-	clientsMx.Unlock()
-
-	errChan := client.SendPackets(pktChan)
-
-	// wait for error or close
-	go func() {
-		err := <-errChan
-		if err != nil {
-			logger.Debug().Err(err).Msg("client error")
-			logger.Info().Int("connected", len(clients)-1).Msg("closing connection")
-		}
-
-		clientsMx.Lock()
-		for i, c := range clients {
-			if c == pktChan {
-				clients = append(clients[:i], clients[i+1:]...)
-				break
-			}
-		}
-		clientsMx.Unlock()
-
-		close(pktChan)
-	}()
-}
-
-func processPackets(ctx context.Context, source *gopacket.PacketSource) {
-	for packet := range source.Packets() {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		clientsMx.RLock()
-		for _, client := range clients {
-			client <- packet
-		}
-		clientsMx.RUnlock()
-
+		// Add client to broker
+		broker.Add <- client
 	}
 }
