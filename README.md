@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: 2023 - 2025 VaiTon <eyadlorenzo@gmail.com>
+SPDX-FileCopyrightText: 2023 Yun Zheng Hu <hu@fox-it.com>
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # pcap-broker
 
 `pcap-broker` is a tool to capture network traffic and make this available to one or more clients via PCAP-over-IP.

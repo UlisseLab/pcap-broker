@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2023 - 2025 VaiTon <eyadlorenzo@gmail.com>
+// SPDX-FileCopyrightText: 2023 Yun Zheng Hu <hu@fox-it.com>
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package pcapclient
 
 import (
@@ -109,20 +114,13 @@ func (b *PcapBroker) handleClient(c *Client) {
 		return
 	}
 
-	for {
-		select {
-		case data, ok := <-c.Packets:
-			if !ok {
-				return
-			}
-
-			err := c.SendPacket(data)
-			if err != nil {
-				log.Warn().Msgf("failed to send packet to client %s: %v", c.ID, err)
-				log.Debug().Msgf("asking the broker to remove client %s", c.ID)
-				b.Remove <- c.ID
-				return
-			}
+	for data := range c.Packets {
+		err := c.SendPacket(data)
+		if err != nil {
+			log.Warn().Msgf("failed to send packet to client %s: %v", c.ID, err)
+			log.Debug().Msgf("asking the broker to remove client %s", c.ID)
+			b.Remove <- c.ID
+			return
 		}
 	}
 }

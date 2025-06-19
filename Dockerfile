@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2023 Yun Zheng Hu <hu@fox-it.com>
+#
+# SPDX-License-Identifier: Apache-2.0
+
 FROM golang:alpine
 
 COPY . /app

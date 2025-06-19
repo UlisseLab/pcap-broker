@@ -1,3 +1,8 @@
+// SPDX-FileCopyrightText: 2023 - 2025 VaiTon <eyadlorenzo@gmail.com>
+// SPDX-FileCopyrightText: 2023 Yun Zheng Hu <hu@fox-it.com>
+//
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import (
