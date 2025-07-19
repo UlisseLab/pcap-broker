@@ -3,12 +3,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package pcapclient
+package broker
 
 import (
 	"fmt"
-	"net"
-	"time"
+	"io"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -16,21 +15,19 @@ import (
 )
 
 type Client struct {
-	ID      string
-	Packets chan gopacket.Packet
-	Closed  chan struct{}
+	id      string               // unique identifier for the client
+	packets chan gopacket.Packet // channel to send packets to the client
+	closed  chan struct{}        // channel to signal when the client is closed
 
-	conn   net.Conn
 	writer *pcapgo.Writer
 }
 
-func NewPcapClient(conn net.Conn) *Client {
+func NewClient(id string, w io.Writer) *Client {
 	return &Client{
-		ID:      conn.RemoteAddr().String(),
-		Packets: make(chan gopacket.Packet, 100),
-		Closed:  make(chan struct{}),
-		writer:  pcapgo.NewWriter(conn),
-		conn:    conn,
+		id:      id,
+		packets: make(chan gopacket.Packet, 100),
+		closed:  make(chan struct{}),
+		writer:  pcapgo.NewWriter(w),
 	}
 }
 
@@ -43,14 +40,12 @@ func (c *Client) WritePcapHeader(linkType layers.LinkType) error {
 }
 
 func (c *Client) SendPacket(p gopacket.Packet) error {
-	c.conn.SetWriteDeadline(time.Now().Add(clientTimeout))
-
 	info := p.Metadata().CaptureInfo
-
 	err := c.writer.WritePacket(info, p.Data())
 	if err != nil {
-		_ = c.conn.Close() // chiusura esplicita
 		return fmt.Errorf("can't write packet: %w", err)
 	}
 	return nil
 }
+
+func (c *Client) Id() string { return c.id }

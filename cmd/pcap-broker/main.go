@@ -20,7 +20,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/UlisseLab/pcap-broker/pkg/pcapclient"
+	broker "github.com/UlisseLab/pcap-broker"
 )
 
 var (
@@ -83,7 +83,7 @@ func main() {
 	packetSource.Lazy = true
 	packetSource.NoCopy = true
 
-	broker := pcapclient.NewPcapBroker(pcapHandle.LinkType())
+	broker := broker.NewBroker(pcapHandle.LinkType())
 	broker.Input = packetSource.Packets()
 	go func() {
 		// stop the global context when the broker stops
@@ -108,7 +108,7 @@ func main() {
 	log.Debug().Msg("pcap handle closed")
 }
 
-func listen(ctx context.Context, broker *pcapclient.PcapBroker) {
+func listen(ctx context.Context, b *broker.Broker) {
 	// Start server
 	config := net.ListenConfig{}
 	l, err := config.Listen(ctx, "tcp", *listenAddr)
@@ -137,10 +137,10 @@ func listen(ctx context.Context, broker *pcapclient.PcapBroker) {
 			continue
 		}
 
-		client := pcapclient.NewPcapClient(conn)
-		log.Info().Str("clientID", client.ID).Msg("new client connected")
+		client := broker.NewClient(conn.RemoteAddr().String(), conn)
+		log.Info().Str("clientID", client.Id()).Msg("new client connected")
 
 		// Add client to broker
-		broker.Add <- client
+		b.AddClient(client)
 	}
 }
